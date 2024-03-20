@@ -1,0 +1,2515 @@
+---
+title: "primordial_follicle_formation"
+author: "ylt"
+date: '2022-07-08'
+output: html_document
+---
+
+#  安装分析包
+```{r}
+install.packages ('pheatmap')
+install.packages("BiocManager")
+install.packages("tidyverse")
+BiocManager::install("hdf5r")
+BiocManager::install("metap")
+BiocManager::install("Seurat")
+BiocManager::install("patchwork")
+install.packages("psych")
+install.packages("ggsci")
+install.packages("cowplot")
+
+```
+
+
+
+
+
+# 环境准备
+```{r 1.ENVprepare}
+##系统报错改为英文
+Sys.setenv(LANGUAGE = "en")
+##禁止转化为因子
+options(stringsAsFactors = FALSE)
+##清空环境
+rm(list=ls())
+getwd()
+```
+
+# 加载分析包
+```{r 2.load_packages}
+library(BiocManager)
+library(tidyverse)
+library(hdf5r)
+library(Seurat)
+library(dplyr)
+library(patchwork)
+library(pheatmap)
+library(pheatmap)
+library(psych)
+library(ggsci)
+library(cowplot)
+
+```
+
+# 加载本次分析最后保存的数据
+```{r}
+load(file = "scRNA1_last.Rdata")
+
+load("H:/ylty_scRNA_analysis/1.primordial_follicle_formation_analysis/scRNA1_last.rdata")
+```
+
+
+
+
+
+
+# 数据读入  第一种方法
+```{r 3. read_data}
+dir= c('1.data/sec/outs/filtered_feature_bc_matrix/', "1.data/fh/outs/filtered_feature_bc_matrix/")
+names(dir) = c('scSec', 'scFiv')  
+counts <- Read10X(data.dir =dir)
+scRNA1 = CreateSeuratObject(counts,min.cells = 3, min.features = 200)
+sc.1 <- SplitObject(scRNA1,split.by = "orig.ident")
+table(scRNA1@meta.data$orig.ident)
+```
+# 数据读入第二种方法
+# 创建一个空列表，循环读入数据，创建scRNAlist 这种方法和第一种基本一样的
+```{r 4. create_scRNAlist}
+dir = c('1.data/sec/outs/filtered_feature_bc_matrix/', "1.data/fh/outs/filtered_feature_bc_matrix/")
+scRNAlist <- list()
+for(i in 1:length(dir)){
+  counts <- Read10X(data.dir = dir[i])
+  scRNAlist[[i]] <- CreateSeuratObject(counts, min.cells = 3, min.features =200)
+}
+
+scRNAlist <- merge(x = scRNAlist[[1]],y = scRNAlist[-1],
+  add.cell.ids = names(scRNAlist))
+```
+# 保存数据
+```{r 5.save_Data}
+save(scRNA1,file = "scRNA1.Rdata")
+# load("H:/SC_ST/1.practice/day_18-3/scRNAlist.Rdata")
+```
+
+# 质控和过滤
+```{r}
+library(tidyverse)
+library(patchwork)
+library(Seurat)
+
+
+ # 添加线粒体信息
+## 鸡的线粒体基因
+
+
+mito_genes = c("ND1", "ND2", "COX1", "COII", "ATP8", "ATP6", "COX3", "ND3", "ND4L", "ND4", "ND5", "CYTB", "ND6")
+rowSums(scRNA1[mito_genes,])
+mito_genes <- intersect(mito_genes,rownames(scRNA1))
+
+# 计算线粒体基因占比
+scRNA1[["percent.mt"]] <- PercentageFeatureSet(scRNA1,features = mito_genes)
+
+# 添加细胞周期
+scRNA1 <- CellCycleScoring(scRNA1,s.features = cc.genes$s.genes,g2m.features = cc.genes$g2m.genes)
+
+colnames(scRNA1@meta.data)
+# 可视化--箱型图
+VlnPlot(scRNA1,
+  features = c("nFeature_RNA", "nCount_RNA","percent.mt","S.Score","G2M.Score"),group.by = "orig.ident",log = T,pt.size = 0.1)
+
+
+# 可视化--山峦图
+RidgePlot(scRNA1,
+  features = c("nCount_RNA","nFeature_RNA","percent.mt","S.Score","G2M.Score"),group.by = "orig.ident",log = T,ncol = 1)
+
+
+# 过滤
+scRNA1 <- subset(scRNA1,
+  subset = nFeature_RNA > 300 & nFeature_RNA < 6000 & percent.mt < 15)
+
+save(scRNA1,file = "H:/ylty_scRNA_analysis/1.primordial_follicle_formation_analysis/filtered_scRNA1.rdata")
+
+
+```
+
+# 数据标准化以及整合数据
+```{r}
+# 数据的拆分
+scRNA_list <- SplitObject(scRNA1, split.by = "orig.ident")
+
+# SCTransform 标准化
+for(i in 1:length(scRNA_list)){
+  scRNA_list[[i]] <- SCTransform(scRNA_list[[i]],
+    variable.features.n = 3000,
+    vars.to.regress = c("percent.mt","S.Score","G2M.Score"),
+    verbose = FALSE)
+}
+
+# 数据整合
+features <- SelectIntegrationFeatures(object.list = scRNA_list,nfeatures = 3000)
+scRNA_list <- PrepSCTIntegration(object.list = scRNA_list, anchor.features = features)
+
+anchors <- FindIntegrationAnchors(object.list = scRNA_list, reference = 2,normalization.method = "SCT",anchor.features = features)
+
+# 整合数据
+scRNA1 <- IntegrateData(anchorset = anchors,normalization.method = "SCT")
+
+DefaultAssay(scRNA1)<- "integrated"
+
+# 保存数据
+save(scRNA1,file = "H:/ylty_scRNA_analysis/1.primordial_follicle_formation_analysis/integrated_scRNA1.rdata")
+
+pdf("Ridgeplot.pdf", height = 10,width = 9)
+RidgePlot(scRNA1,
+  features = c("nCount_RNA","nFeature_RNA","percent.mt","S.Score","G2M.Score"),group.by = "orig.ident",log = T,ncol = 1)
+dev.off()
+```
+
+
+# 降维分析
+```{r}
+# 加载数据
+# load(file="H:/ylty_scRNA_analysis/1.primordial_follicle_formation_analysis/integrated_scRNA1.rdata")
+
+# 过滤细胞周期的影响
+#scRNA1 <- ScaleData(scRNA1, vars.to.regress = c("S.Score","G2M.Score"), features = rownames(scRNA1))
+
+# 使用PCA降维
+scRNA1 <- RunPCA(scRNA1)
+
+ElbowPlot(scRNA,ndims = 50)
+
+# t-SNE
+scRNA1 <- RunTSNE(scRNA1,dims = 1:40)
+
+# UMAP
+scRNA1 <- RunUMAP(scRNA1, dims = 1:40)
+
+# 检查离散型协变量，如细胞周期
+p1 <- DimPlot(scRNA1, reduction = "umap",group.by = "Phase",label = FALSE)
+p1
+
+# 判断是否有批次效应
+DimPlot(scRNA1,
+  reduction = "umap",
+  group.by = "orig.ident",
+  label = FALSE)
+
+# 检查连续型变量：如细胞线粒体比例
+pdf("ident.pdf",height = 6,width = 8)
+FeaturePlot(scRNA1,
+  reduction = "umap",
+  features = "percent.mt")
+dev.off()
+
+
+FeaturePlot(scRNA1,
+  features = c("SQSTM1","CYP17A1"),
+  reduction = "umap")
+
+# 查看PCA降维后的细胞群中的表达情况
+FeaturePlot(scRNA1,
+  features = c("KRT7","GIF","CYP17A1","NDC80"),
+  reduction = "umap",min.cutoff = 3, max.cutoff = 10)
+
+VlnPlot(scRNA1,features = c("AKAP12","KRT19","TOP2A","FMOD"),pt.size = 0)
+
+
+save(scRNA1, file = "H:/ylty_scRNA_analysis/1.primordial_follicle_formation_analysis/PCA_scRNA1.rdata" )
+
+load("H:/ylty_scRNA_analysis/1.primordial_follicle_formation_analysis/PCA_scRNA1.rdata")
+```
+
+# 聚类
+```{r}
+
+# load("H:/ylty_scRNA_analysis/1.primordial_follicle_formation_analysis/PCA_scRNA1.rdata" )
+# 聚类
+scRNA1 <- FindNeighbors(scRNA1, dims = 1:40)
+
+# resolution 一般为0.4-1.2，值越大群体越多
+scRNA1 <- FindClusters(scRNA1,resolution = 0.5)
+
+head(Idents(scRNA1),5)
+
+# 查看每个细胞群细胞数量
+cell_num <- table(Idents(scRNA1))  
+
+# 计算每种细胞群的比例
+cell_freq <- round(prop.table(cell_num),2)
+
+cell_sum <- rbind(cell_freq,cell_num)
+# 保存
+write.csv(file = "cell_sum.csv",cell_sum)
+
+
+# 展示聚类的结果
+## umap 展示聚类结果
+set.seed(1)
+scRNA1 <- RunUMAP(scRNA1, dims= 1:40)
+pdf("cluster_20.pdf", width = 8, height = 8)
+DimPlot(scRNA1, reduction = "umap",label = TRUE,split.by = "orig.ident",ncol = 1,pt.size = 0.5)+NoLegend()
+dev.off()
+
+
+DimPlot(scRNA1, reduction = "umap",label = TRUE,pt.size = 0.8)+NoLegend()
+```
+
+
+
+
+# 鉴定表达标记基因
+```{r}
+# 鉴定差异表达基因
+## logfc.threshold = 0.25 两组之间倍数改变大于0.25
+## min.pct = 0.25 至少在该cluster 25% 的细胞中表达该基因
+
+scRNA1.markers <- FindAllMarkers(scRNA1,
+  only.pos = TRUE, # 特异性高表达marker
+  min.pct = 0.25,
+  logfc.threshold = 0.25)
+
+dir()
+write.csv(scRNA1.markers,"./all_cell_cluster_marker_gene.csv")
+head(scRNA1.markers)
+# 挑选每个细胞亚群中特意高表达的10个基因
+
+top20 <- scRNA1.markers %>% group_by(cluster) %>% top_n(n=20,wt = avg_log2FC)
+write.csv(top20,file = "H:/ylty_scRNA_analysis/1.primordial_follicle_formation_analysis/top_20.csv")
+
+# 整理成表格，只显示基因名字
+top20_table <- unstack(top20,gene ~ cluster)
+names(top20_table) <- gsub("X","cluster",names(top20_table))
+write.csv(top20_table,file = "H:/ylty_scRNA_analysis/1.primordial_follicle_formation_analysis/top20_table.csv", row.names = F)
+
+```
+
+# 亚群间相关性分析
+```{r}
+
+library(pheatmap)
+library(psych)
+colnames(scRNA1@meta.data)
+Idents(scRNA1)="seurat_clusters"
+exp <- AverageExpression(scRNA1)
+
+coorda <- corr.test(exp$RNA,exp$RNA,method = "spearman")
+
+pdf("pheatmap.pdf",width = 8, height = 5)
+pheatmap(coorda$r)
+dev.off()
+```
+
+
+# 细胞群之间相关性分析
+```{r}
+table(scRNA1$cluster)
+av <- AverageExpression(scRNA1,group.by = "seurat_clusters",assays = "RNA")
+av = av[[1]]
+head(av)
+
+# 选出标准差最大的1000个基因
+cg = names(tail(sort(apply(av,1,sd)),1000))
+
+pdf("heat_cor.pdf")
+pheatmap::pheatmap(cor(av[cg,],method = "spearman"))
+dev.off()
+```
+
+
+# 查看基因的表达
+```{r}
+## 查看一些基因在UMAP展示的各个亚群中的表达情况
+FeaturePlot(scRNA1,features = c("TBPL2"),reduction = "umap",pt.size = 1)
+
+pdf("DAZL.pdf",width = 8,height = 6)
+VlnPlot(scRNA1,features = c("FOXL2"),pt.size = 0.05) + NoLegend()
+dev.off()
+```
+
+
+
+# 鉴定差异表达基因，挑选marker基因
+```{r}
+# 鉴定差异表达基因
+## logfc.threshold = 0.25 两组之间倍数改变大于0.25
+## min.pct = 0.25 至少在该cluster 25% 的细胞中表达该基因
+
+scRNA1.markers <- FindAllMarkers(scRNA1,
+  only.pos = TRUE, # 特异性高表达marker
+  min.pct = 0.25,
+  logfc.threshold = 0.25)
+
+head(scRNA1.markers)
+```
+
+
+
+
+
+# 挑选每个细胞亚群中特意高表达的10个基因
+```{r}
+top20 <- scRNA1.markers %>% group_by(cluster) %>% top_n(n=20,wt = avg_log2FC)
+write.csv(top20,file = "H:/ylty_scRNA_analysis/1.primordial_follicle_formation_analysis/top_10.csv")
+
+# 整理成表格，只显示基因名字
+top20_table <- unstack(top20,gene ~ cluster)
+names(top20_table) <- gsub("X","cluster",names(top20_table))
+write.csv(top20_table,"H:/ylty_scRNA_analysis/1.primordial_follicle_formation_analysis/top20_table.csv")
+
+```
+
+
+```{r}
+VlnPlot(scRNA1,features = c("KRT7","TOP2A"),pt.size = 0.05) + NoLegend()
+
+```
+
+
+# 标记基因气泡图
+```{r}
+# cluster 标记基因
+
+#亚群间差异基因分析
+dif<-FindAllMarkers(scRNA1,logfc.threshold = 0.6,min.pct = 0.4,only.pos = T)
+write.table(dif,"dif.txt",sep = "\t",quote = F,row.names = T,col.names = T)
+#dif1 <- read.table("dif.txt",header = T,row.names = 1,sep = "\t")
+sig.dif<-dif%>%group_by(cluster)%>%top_n(n = 10,wt = avg_log2FC)
+write.table(sig.dif,"dif.sig.txt",sep = "\t",quote = F,row.names = T,col.names = T)
+genes <- unique(sig.dif$gene)
+length(genes);genes
+
+
+# 5.气泡图 和 热图
+## 5.1 气泡图
+
+# 5 图形可视化
+pdf("dotplot.pdf",height = 8,width = 20)
+DotPlot(scRNA1,features =genes[1:130],dot.scale= 3.5,cols = c("green","red")) +theme(axis.text.x = element_text(angle = 45,hjust = 1,size = 5))#气泡图   5.1 result
+while (!is.null(dev.list()))  dev.off()
+```
+
+
+
+
+
+
+
+
+
+
+# 细胞注释
+
+```{r}
+cluster2type <- c("0" = "Resting state cell",
+"1" = "Ovary interstitial cell 2",
+"2" = "Macrophages",
+"3" = "Epithelial cell 1",
+"4" = "Kidney interstitial cell 2",
+"5" = "Epithelial cell 2",
+"6" = "Kidney tubular cell 1",
+"7" = "Pre-granulosa",
+"8" = "Ovary interstitial cell 1",
+"9" = "Blood red cell",
+"10" = "Endothelial cell",
+"11" = "Immune cell T",
+"12" = "Ovary epithelial cell",
+"13" = "Epithelial cell 3",
+"14" = "Theca cell",
+"15" = "Germ cell",
+"16" = "Kidney tubular cell 2",
+"17" = "Kidney interstitial cell 1",
+"18" = "Fibroblasts",
+"19" = "Glial cell",
+"20" = "Kidney interstitial cell 3"
+)
+
+FeaturePlot(scRNA1,features = c("G6PC"),pt.size = 0.05)
+VlnPlot(scRNA1,features = c("TOP2A"),pt.size = 0.05) + NoLegend()
+FeaturePlot(scRNA1,features = c( "CYP17A1","CYP19A1","CYP11A1","PCNA"),pt.size = 0.05,min.cutoff = 4,max.cutoff = 10) + NoLegend()
+
+```
+
+
+# 替换和显示细胞名在umap上
+```{r}
+
+scRNA1[['cell_type']] = unname(cluster2type[scRNA1@meta.data$seurat_clusters])
+set.seed(111)
+DimPlot(scRNA1, 
+        reduction = "umap", 
+        group.by = "cell_type",
+        label = TRUE, label.size = 3, pt.size = 0.5) + NoLegend()
+
+getwd()
+save(scRNA1,file = "H:/ylty_scRNA_analysis/1.primordial_follicle_formation_analysis/scRNA1_last.Rdata")
+```
+
+# 加载数据
+```{r}
+load("scRNA1_last.Rdata")
+```
+
+
+
+## 这一个图需要美化
+```{r}
+
+plot3 <- DimPlot(scRNA1, 
+        reduction = "umap", 
+        group.by = "cell_type",
+        label = TRUE, label.size = 3, pt.size = 0.5,label.box = F)+ NoLegend() + labs(x = "UMAP1", y = "UMAP2",title = "cell_type") +
+  theme(panel.border = element_rect(fill=NA,color="black", size=1, linetype="solid"),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank())
+  
+library(ggsci)
+library(ggplot2)
+library(cowplot)
+#nature版本
+plot4 = plot3 +  scale_color_hue()
+#science版本
+plot5 = plot3 + scale_color_npg()
+
+pdf("notation_cluster.pdf", width = 12,height = 8)
+plot_grid(plot4)
+dev.off()
+```
+
+# cluster 标记基因
+```{r}
+#亚群间差异基因分析
+dif<-FindAllMarkers(scRNA1,logfc.threshold = 0.6,min.pct = 0.4,only.pos = T)
+write.table(dif,"dif.txt",sep = "\t",quote = F,row.names = T,col.names = T)
+#dif1 <- read.table("dif.txt",header = T,row.names = 1,sep = "\t")
+sig.dif<-dif%>%group_by(cluster)%>%top_n(n = 5,wt = avg_log2FC)
+write.table(sig.dif,"dif.sig.txt",sep = "\t",quote = F,row.names = T,col.names = T)
+genes <- unique(sig.dif$gene)
+length(genes);genes
+
+
+
+# 5.气泡图 和 热图
+## 5.1 气泡图
+
+# 5 图形可视化
+pdf("dotplot.pdf",height = 8,width = 15)
+DotPlot(scRNA1,features =genes[1:100],dot.scale = 3.5,cols = c("green","red")) +theme(axis.text.x = element_text(angle = 45,hjust = 1,size = 5))#气泡图   5.1 result
+while (!is.null(dev.list()))  dev.off()
+
+?DotPlot()
+``` 
+
+
+
+
+
+
+
+
+## 细胞比例计算
+
+# 包的加载
+```{r}
+library(Seurat)
+library(tidyverse)
+library(reshape2)
+library(dplyr)
+library(patchwork)
+library(RColorBrewer)
+```
+# 加载数据
+```{r}
+# load("./sc.combined.rdata")
+```
+
+# 提取单细胞子集
+```{r}
+
+scRNA2 <- subset(scRNA1, idents = c(
+"3",
+"5",
+"7",
+"8",
+"10",
+"12",
+"13",
+"14",
+"15",
+"18",
+"19"))
+```
+
+
+
+# 选择颜色
+```{r}
+library(RColorBrewer)
+qual_col_pals <- brewer.pal.info[brewer.pal.info$category=="qual",]
+
+# 处理后有73种差异还比较明显的颜色，基本够用
+col_vector <- unlist(mapply(brewer.pal, qual_col_pals$maxcolors, rownames(qual_col_pals)))
+```
+
+
+# 查看数据，准备工作
+```{r}
+library(reshape)
+table(scRNA2@meta.data$cell_type)
+pB2_df <- table(scRNA2@meta.data$cell_type, scRNA2@meta.data$orig.ident) %>% melt()
+colnames(pB2_df) <- c("Cluster","Sample","Number")
+pB2_df$Sample <- factor(pB2_df$Sample, levels = c("scSec","scFiv"))
+# 筛选出其中六种细胞类型
+cluster <- c(
+"Epithelial cell 1","Epithelial cell 2","Pre-granulosa","Ovary interstitial cell","Endothelial cell","Ovary epithelial cell",
+"Epithelial cell 3","Theca cell","Germ cell","Fibroblasts","Glial cell")
+# 转成因子
+pB2_df$Cluster <- factor(pB2_df$Cluster,levels = cluster)
+
+# 这一步是将sample 转换成因子，在绘图的时候可以调整顺序
+## pB2_df$Sample <- factor(pB2_df$Sample, levels = c("GF","SPF","FMT"))
+
+# 选择颜色
+sample_color <- col_vector[1:25]
+
+```
+
+# 绘图（选用ggplot）
+
+```{r}
+pB4 <- ggplot(data = pB2_df, aes(x = Number, y = Sample, fill = Cluster))+
+  geom_bar(stat = "identity",width = 0.8, position = "fill")+
+  scale_fill_manual(values = sample_color[1:25])+
+  theme_bw()+
+  theme(panel.grid = element_blank())+
+  labs(y = "", x = "Ratio")+
+  theme(axis.text.y = element_text(size = 12, colour = "black"))+
+  theme(axis.text.x = element_text(size = 12, colour = "black"))+
+  theme(axis.text.x.bottom = element_text(hjust = 1,vjust = 1,angle = 45)
+  )
+pB4
+```
+
+## 每种细胞为一列的图
+```{r}
+pB6 <- ggplot(data = pB2_df, aes(x = Sample, y = Number, fill = Cluster))+
+  geom_bar(stat = "identity",width = 0.8, position = "fill")+
+  scale_fill_manual(values = sample_color[1:25])+
+  theme_bw()+
+  theme(panel.grid = element_blank())+
+  labs(x = "", y = "Ratio")+
+  theme(axis.text.y = element_text(size = 12, colour = "black"))+
+  theme(axis.text.x = element_text(size = 12, colour = "black"))+
+  theme(axis.text.x.bottom = element_text(hjust = 1,vjust = 1,angle = 45)
+  )
+pB6
+
+pdf("cell_percentages.pdf",width = 8, height = 6)
+pB6
+dev.off()
+```
+
+```{r}
+Idents(scRNA_ovary) <- "cell_type"
+VlnPlot(scRNA_ovary,features = c("HSD3B1"),pt.size = 0)
+```
+
+
+
+# 拟时序分析(monocle3)
+
+## 分析包的安装
+```{r}
+# monocle3 无法安装
+sessionInfo()
+BiocManager::install(c('BiocGenerics', 'DelayedArray', 'DelayedMatrixStats',
+                       'limma', 'lme4', 'S4Vectors', 'SingleCellExperiment',
+                       'SummarizedExperiment', 'batchelor', 'Matrix.utils',
+                       'HDF5Array', 'terra', 'ggrastr'))
+devtools::install_github('cole-trapnell-lab/monocle3', ref="develop")  # 显示二进制的时候选择否
+
+```
+
+# 分析包的加载
+```{r}
+library(Seurat)
+library(monocle3)
+library(dplyr)
+library(monocle)
+library(pheatmap)
+```
+
+# 提取感兴趣细胞群做子集
+```{r}
+scRNA3 <- subset(scRNA1, idents = c("3","5","7","12","13","14","15"))
+save(scRNA3, file = "scRNA3.Rdata")
+```
+
+# 数据的准备及降维
+```{r}
+data <- scRNA3@assays$RNA@counts
+cell_metadata <- scRNA3@meta.data
+gene_annotation <- data.frame(gene_short_name = rownames(data))
+rownames(gene_annotation) <- rownames(data)
+
+# 创建CDS
+cds <- new_cell_data_set(data,cell_metadata = cell_metadata,gene_metadata =gene_annotation) 
+
+# 降维
+cds <- preprocess_cds(cds, num_dim = 50)     #preprocess_cds函数相当于seurat中NormalizeData+ScaleData+RunPCA
+cds <- reduce_dimension(cds,preprocess_method = "PCA")
+cds <- reduce_dimension(cds, reduction_method="tSNE")
+
+cds <- cluster_cells(cds)   
+
+
+cds.embed <- cds@int_colData$reducedDims$UMAP
+int.embed <- Embeddings(scRNA3, reduction = "umap")
+int.embed <- int.embed[rownames(cds.embed),]
+cds@int_colData$reducedDims$UMAP <- int.embed   #因此我们以后只要是画umap的点图就跟seurat的图片形状是一样的
+
+#画图看一下
+plot_cells(cds, reduction_method="UMAP", color_cells_by="seurat_clusters") 
+
+cds <- learn_graph(cds) 
+
+
+# 绘图
+plot_cells(cds,
+           color_cells_by = "cell_type",
+           label_groups_by_cluster=FALSE,
+           label_leaves=FALSE,
+           label_branch_points=TRUE,
+           group_label_size=3,
+           cell_size=1.5)   
+
+
+
+#第二种展示方法
+cds = order_cells(cds)
+plot_cells(cds,
+           color_cells_by = "pseudotime",
+           label_cell_groups=FALSE,
+           label_leaves=TRUE,
+           label_branch_points=TRUE,
+           graph_label_size=1.5,
+           group_label_size=4,cell_size=1.5)
+```
+
+
+
+
+
+
+
+# 将Seurat 对象转换成monocle对象
+
+```{r}
+data <- as(as.matrix(scRNA3@assays$RNA@counts), 'sparseMatrix')
+pd <- new('AnnotatedDataFrame', data = scRNA3@meta.data)
+fData <- data.frame(gene_short_name = row.names(data),row.names =row.names(data))
+fd <- new("AnnotatedDataFrame",data = fData)
+monocle_cds <- newCellDataSet(data,
+  phenoData = pd,
+  featureData = fd,
+  lowerDetectionLimit = 0.5,
+  expressionFamily = negbinomial.size())
+
+monocle_cds <- estimateSizeFactors(monocle_cds)
+monocle_cds <- estimateDispersions(monocle_cds)
+
+HSMM <- monocle_cds
+disp_table <- dispersionTable(HSMM)
+disp.gene <- subset(disp_table,mean_expression >=0.1 )
+HSMM <- setOrderingFilter(HSMM, disp.gene$gene_id)
+plot_ordering_genes(HSMM)
+
+
+
+
+plot_pc_variance_explained(HSMM, return_all = F)
+# 降维
+HSMM <- reduceDimension(HSMM,max_components = 2, method = 'DDRTree')
+# 排序
+HSMM <-orderCells(HSMM)
+# 可视化
+plot_cell_trajectory(HSMM, color_by = "cell_type")
+
+plot_cell_trajectory(HSMM, color_by = "Pseudotime")
+
+plot_cell_trajectory(HSMM, color_by = "Pseudotime")
+
+```
+
+
+# 构建细胞发育轨迹
+```{r}
+ordering_genes <- scRNA3[["RNA"]]@var.features
+HSMM <- setOrderingFilter(HSMM,ordering_genes)
+HSMM <- estimateSizeFactors(HSMM)
+# 降维
+HSMM <- reduceDimension(HSMM,
+  norm_method = "none", # 由于我们的数据已经经过归一化，不然这里要用“log”
+  reduction_method = "DDRTree",
+  max_components = 3,
+  scaling = TRUE,
+  verbose = TRUE,
+  pseudo_expr = 0 #这里我们不做归一化，所以用0，不然就要使用1，取对数
+  )
+
+```
+# 将细胞摆放到轨迹上
+```{r}
+HSMM <- orderCells(HSMM)
+
+```
+
+# 绘制展示
+# 以state来展示
+```{r}
+plot_cell_trajectory(HSMM)
+```
+# 以细胞类型来展示
+```{r}
+p <- plot_cell_trajectory(HSMM, color_by = "celltype")
+p
+```
+
+# 分别展示每一个细胞类型的发育轨迹
+```{r}
+plot_cell_trajectory(HSMM, color_by = "celltype") + facet_wrap(~celltype,nrow = 3) + NoLegend()
+```
+
+# 查看特定的gene 在发育轨迹上的表达情况
+```{r}
+plot_cell_trajectory(HSMM,markers = c("COL4A1","AMH"),use_color_gradient = T)
+```
+
+# 发育拟时间
+```{r}
+plot_cell_trajectory(HSMM, color_by = "Pseudotime")
+```
+
+
+# 绘制热图
+```{r}
+top5 <- scRNA1.markers %>% group_by(cluster) %>% top_n(n=5, wt = avg_log2FC)
+
+sig_gene_names <- unique(top5$gene)
+pseudotemporalplot<-plot_pseudotime_heatmap(HSMM[sig_gene_names,],num_cluster = 5,cores = 4,show_rownames = T, hmcols = NULL)
+
+pdf("peseudo.pdf")
+pseudotemporalplot
+dev.off()
+
+save(scRNA3, file = "H:/ylty_scRNA_analysis/1.primordial_follicle_formation_analysis/scRNA3.rdata" )
+```
+
+
+
+# 基因课拟时序
+```{r}
+library(dyno)
+library(tidyverse)
+library(SummarizedExperiment)
+library(Matrix)
+#devtools::install_github("dynverse/dyno",force = T)
+```
+
+# 导入数据
+```{r}
+load("H:/ylty_scRNA_analysis/1.primordial_follicle_formation_analysis/scRNA1_last.rdata" )
+
+
+```
+
+# 查看数据
+```{r}
+scRNA2 <- subset(scRNA1, idents = c("1","4","8"))
+class(scRNA2)
+```
+
+# 提取表达矩阵
+```{r}
+gene_counts <- scRNA2@assays[["RNA"]]@counts
+gene_exp <- scRNA2@assays[["RNA"]]@data
+```
+# 提取细胞信息
+```{r}
+
+cell_info <- rownames_to_column(scRNA2@meta.data,var = "cell_id")
+
+```
+
+# 使用wrap_expression 构建对象
+## 注意输入的表达矩阵，行为细胞，列为基因
+```{r}
+dynob <- wrap_expression(
+  expression = t(gene_exp), # 标准化之后的稀疏矩阵
+  counts = t(gene_counts), # 原始稀疏矩阵
+  cell_info = cell_info
+)
+
+# 添加分组
+dynob <- add_grouping(dynob, cell_info$cell_type)
+
+```
+
+# 选择TI方法
+
+```{r}
+guidelines_shiny(dataset = dynob)
+```
+```{r}
+answers <- dynguidelines::answer_questions(
+  multiple_disconnected = NULL, 
+  expect_topology = NULL, 
+  expected_topology = NULL, 
+  n_cells = 4534, 
+  n_features = 20907, 
+  memory = "10GB", 
+  prior_information = c("start_id", "end_id", "end_n", "start_n", "leaves_n", "groups_n", "features_id", "dimred"), 
+  docker = TRUE
+)
+guidelines <- dynguidelines::guidelines(answers = answers)
+
+methods_selected <- guidelines$methods_selected
+methods_selected
+
+```
+
+
+# 轨迹推断
+```{r}
+
+
+model <- infer_trajectory(dynob, method = "slingshot")
+
+
+plot_dimred(model, label_milestones = T, grouping = dynob$grouping)
+
+
+
+
+
+
+
+head(dynob$grouping)
+
+model$milestone_network
+
+model$progressions
+
+plot_dimred(model, label_milestones = T, grouping = dynob$grouping)
+
+model_rooted <- model %>% add_root(root_malestone_id = "malestone_begin")
+
+
+```
+
+
+
+
+
+# 使用小提琴图&气泡图 协助细胞亚群鉴定
+```{r}
+# 小提琴图
+VlnPlot(scRNA1,features = c("AMHR"),pt.size = 0)
+
+# 气泡图
+DotPlot(scRNA1, features = c("DAZL","DDX4","CYP11A1","CYP17A1"))
+
+# 山峦图
+RidgePlot(scRNA1, features = c("DAZL","DDX4","CYP19A1","OSR1"))
+
+```
+
+
+# 绘制热图看每个亚群前五个基因
+```{r}
+top5 <- scRNA1.markers %>% group_by(cluster) %>% top_n(n=5,wt = avg_log2FC)
+DoHeatmap(scRNA1,features = top5$gene) + NoLegend()
+```
+
+
+# 亚群间相关性分析
+```{r}
+library(pheatmap)
+library(psych)
+colnames(scRNA1@meta.data)
+Idents(scRNA1)="seurat_clusters"
+exp <- AverageExpression(scRNA1)
+
+coorda <- corr.test(exp$RNA,exp$RNA,method = "spearman")
+pheatmap(coorda$r)
+```
+
+
+
+```{r}
+Idents(scRNA1) <- "cell_type"
+VlnPlot(scRNA1,features = c("HSPE1","HSD17B2"),pt.size = 0)
+```
+
+# 保存一下降维后的数据
+
+```{r}
+save(scRNA1,file = "H:/ylty_scRNA_analysis/1.primordial_follicle_formation_analysis/PCA_scRNA1.rdata")
+save(scRNA1.markers,file = "H:/ylty_scRNA_analysis/1.primordial_follicle_formation_analysis/scRNA1.markers.rdata")
+load(file = "H:/ylty_scRNA_analysis/1.primordial_follicle_formation_analysis/PCA_scRNA1.rdata")
+load(file = "H:/ylty_scRNA_analysis/1.primordial_follicle_formation_analysis/scRNA1.markers.rdata")
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+# regroup
+```{r}
+# 加载包
+library(Seurat)
+library(dplyr)
+
+# 加载数据
+load(file = "H:/ylty_scRNA_analysis/1.primordial_follicle_formation_analysis/PCA_scRNA1.rdata")
+```
+# UMAP 展示聚类结果
+```{r}
+pdf("complete_UMAP.pdf",width = 10)
+DimPlot(scRNA1, reduction = "umap", label = T)
+DimPlot(scRNA1,reduction = "umap",group.by = "orig.ident",label = FALSE)
+dev.off()
+```
+
+
+# 提取目标细胞群，重新分群
+## 提取目标细胞群之后的步骤跟分析单个样本的单细胞数据分析是一样的
+```{r}
+c0 <- subset(x = scRNA1, idents = "15" )  # 将0这个cluster提取出来
+c0 <- NormalizeData(c0)
+c0 <- FindVariableFeatures(c0, selection.method = "vst", nfeatures = 2000)
+c0 <- ScaleData(c0, rownames(c0))
+c0 <- RunPCA(c0, features = VariableFeatures(object = c0))
+
+c0 <- FindNeighbors(c0, dims = 1:20)
+c0 <- FindClusters(c0, resolution = 1)
+
+# 查看B细胞重新分群之后的前五个细胞分组
+head(Idents(c0),5)
+table(c0$seurat_clusters)
+c0 <- RunPCA(c0, dims = 1:50)
+
+# 绘制UMAP
+DimPlot(c0, reduction = "umap", label = T)
+DotPlot(c0, features = c("DAZL","DDX4","CYP19A1","OSR1","TBPL2"))
+
+VlnPlot(scRNA1,features = c("CPT1A"),pt.size = 0)
+dim(c0@assays$RNA@counts)
+table(c0@meta.data$seurat_clusters)
+```
+# 亚群标记基因分析
+
+```{r}
+dif<-FindAllMarkers(c0,logfc.threshold = 0.6,min.pct = 0.4,only.pos = T)
+write.table(dif,"dif.txt",sep = "\t",quote = F,row.names = T,col.names = T)
+#dif1 <- read.table("dif.txt",header = T,row.names = 1,sep = "\t")
+sig.dif<-dif%>%group_by(cluster)%>%top_n(n = 10,wt = avg_log2FC)
+
+genes <- unique(sig.dif$gene)
+length(genes);genes
+
+DotPlot(c0,features =genes[1:100],dot.scale = 3.5,cols = c("green","red")) +theme(axis.text.x = element_text(angle = 45,hjust = 1,size = 5))
+```
+
+
+
+# 周期
+```{r}
+library(Seurat)
+library(tidyverse)
+
+# 读入表达矩阵
+test.mat <- read.table("cellcycle_expressionMatrix.txt", header = T, row.names = 1,sep = "\t",stringsAsFactors = F)
+# 创建Seurat 对象
+test.seu <- CreateSeuratObject(counts = test.mat)
+
+# 为了节约时间，这里抽取5000个基因进行演示
+# 真实情况下，请删除这一部分，用完整数据进行分析
+
+set.seed(123)
+# cc.genes 为细胞周期相关的基因，为list,有两个元素s.gene, g2m.genes
+cc_gene<- unlist(cc.genes)
+
+# 从数据中抽取出5000个基因，加上97个细胞周期相关的基因，去除重复基因
+subgene <- unique(c(sample(rownames(test.seu),5000),as.character(cc_gene)))
+
+# 抽取相应的seurat 对象
+test.seu <- test.seu[subgene,]
+
+# 下面内容跟分析单个细胞样本一样
+test.seu <- NormalizeData(test.seu)
+test.seu <- FindVariableFeatures(test.seu, selection.method = "vst")
+test.seu <- ScaleData(test.seu,features = rownames(test.seu)) 
+
+test.seu <- RunPCA(test.seu,npcs = 50, verbose = FALSE)
+test.seu <- FindNeighbors(test.seu, dims = 1:30)
+test.seu <- FindClusters(test.seu, resolution = 0.4)
+
+test.seu <- RunUMAP(test.seu, dims = 1:30)
+test.seu <- RunTSNE(test.seu, dims = 1:30)
+
+# 绘制UMAP 图
+p1 <- DimPlot(test.seu, reduction = "umap",group.by = "seurat_clusters")
+p1
+
+```
+
+# featureplot 查看s期基因PCNA 和 G2/M期基因MKI67 表达情况
+# s期基因PCNA， G2/M 期基因MKI67 均高表达，说明细胞均处于细胞周期
+```{r}
+
+FeaturePlot(scRNA1, features = c("MKI67","PCNA"),reduction = "umap")
+
+# 计算细胞周期分值，判断这些细胞处于什么期
+s.genes <- cc.genes$s.genes
+g2m.genes <- cc.genes$g2m.genes
+test.seu <- CellCycleScoring(test.seu,s.features = s.genes, g2m.features = g2m.genes)
+
+# 这一步之后test.seu@meta.data 数据框会多四列
+# S.Score, G2M.Score, Phase, old.ident
+
+head(test.seu@meta.data,2)
+
+# 评分和细胞周期phase 的关系
+# S.Score 较高的为S期，G2M.Score较高的为G2M期，都比较低的为G1期。
+
+test.seu@meta.data %>% ggplot(aes(S.Score,G2M.Score)) + geom_point(aes(color = Phase))
+
+# 校正之前，细胞分群与细胞周期的关系
+p2 <- DimPlot(test.seu,reduction = "umap")
+p2
+
+# 去除细胞周期的影响
+test.seu2 <- ScaleData(test.seu,vers.to.regress = c("S.Score","G2M.Score"),features = rownames(test.seu))
+
+# 然后重新跑PCA和聚类
+test.seu2 <- RunPCA(test.seu2,npcs = 50, verbose = FALSE)
+test.seu2 <- FindNeighbors(test.seu2, dims = 1:30)
+test.seu2 <- FindClusters(test.seu2, resolution = 0.4)
+
+test.seu2 <- RunUMAP(test.seu2, dims = 1:30)
+test.seu2 <- RunTSNE(test.seu2, dims = 1:30)
+
+# 校正之后，细胞分群与细胞周期的关系
+p3 <- DimPlot(test.seu2,reduction = "umap")
+p4 <- DimPlot(test.seu2,reduction = "umap", group.by = "Phase")
+p1+p2+p3+p4
+```
+
+
+
+# 拟时序分析
+
+# monocle3包的安装
+```{r}
+library(devtools)
+BiocManager::install(c("BiocGnerics","DelayedArray","DelayedMatrixStats","limma","S4Vectors","SingleCellExperiment","SummarizedExperiment"))
+
+
+devtools::install_github("cole-trapnell-lab/leidenbase")
+devtools::install_github("cole-trapnell-lab/monocle3")
+
+BiocManager::install("monocle")
+
+```
+
+# 分析包的加载
+```{r}
+library(Seurat)
+library(monocle3)
+library(dplyr)
+library(monocle)
+```
+
+# 加载单个样本单细胞数据分析的结果
+```{r}
+load(file = "H:/ylty_scRNA_analysis/1.primordial_follicle_formation_analysis/PCA_scRNA1.rdata")
+
+```
+# 将Seurat 对象转换成monocle对象
+
+```{r}
+scRNA3$celltype <- Idents(scRNA3)
+data <- scRNA3[["RNA"]]@data
+pd <- new("AnnotatedDataFrame",data = scRNA3@meta.data)
+fData <- data.frame(gene_short_name = row.names(data),row.names = row.names(data))
+
+fd <- new("AnnotatedDataFrame",data = fData)
+
+HSMM <- newCellDataSet(data, phenoData = pd, featureData = fd)  # 这个功能如果使用monocle3是不行的
+
+```
+
+# 构建细胞发育轨迹
+```{r}
+ordering_genes <- scRNA3[["RNA"]]@var.features
+HSMM <- setOrderingFilter(HSMM,ordering_genes)
+HSMM <- estimateSizeFactors(HSMM)
+# 降维
+HSMM <- reduceDimension(HSMM,
+  norm_method = "log",
+  reduction_method = "DDRTree",
+  max_components = 3,
+  scaling = TRUE,
+  verbose = TRUE,
+  pseudo_expr = 1
+  )
+
+```
+
+# 将细胞摆放到轨迹上
+```{r}
+HSMM <- orderCells(HSMM)
+
+```
+
+# 绘制展示
+# 以state来展示
+```{r}
+plot_cell_trajectory(HSMM)
+```
+# 以细胞类型来展示
+```{r}
+plot_cell_trajectory(HSMM, color_by = "celltype")
+```
+
+# 分别展示每一个细胞类型的发育轨迹
+```{r}
+plot_cell_trajectory(HSMM, color_by = "celltype") + facet_wrap(~celltype,nrow = 3) + NoLegend()
+```
+
+# 查看特定的gene 在发育轨迹上的表达情况
+```{r}
+plot_cell_trajectory(HSMM,markers = c("DAZL","AMHR2"),use_color_gradient = T)
+```
+
+# 绘制热图
+```{r}
+# 筛选做拟时序列分析的marker 基因
+scRNA3.markers <- FindAllMarkers(scRNA3,
+  only.pos = TRUE, # 特异性高表达marker
+  min.pct = 0.25,
+  logfc.threshold = 0.25)
+
+
+top5 <- scRNA3.markers %>% group_by(cluster) %>% top_n(n=5, wt = avg_log2FC)
+sig_gene_names <- unique(top5$gene)
+pseudotemporalplot <- plot_pseudotime_heatmap(HSMM[sig_gene_names,],
+  num_cluster = 5,
+  cores = 4,
+  hmcols = NULL,
+  show_rownames = T,
+  return_heatmap = T)
+```
+
+
+
+```{r}
+# 分析包的加载
+library(Seurat)
+library(dplyr)
+library(monocle)
+```
+
+# 提取亚细胞群
+```{r}
+a <- subset(scRNA1,ident = c("0","4","5","7"))
+summary(a@meta.data$orig.ident=="sec")
+
+```
+
+
+
+
+
+
+
+# 细胞通讯分析
+# 细胞通讯分析
+
+# 细胞通讯 cellchat
+```{r}
+# 安装包
+library(devtools)
+# BiocManager::install("ComplexHeatmap")
+library(ComplexHeatmap)
+# devtools::install_github("sqjin/CellChat",type="binary")
+# 加载所需要的包
+# BiocManager::install("biomaRt")
+library(CellChat)
+library(ggplot2)
+library(ggalluvial)
+library(Seurat)
+library(biomaRt)
+library(NMF)
+library(svglite)
+```
+
+# 数据的载入
+```{r}
+scRNA_ovary <- readRDS("H:/ylty_scRNA_analysis/1.primordial_follicle_formation_analysis/scRNA_ovary.Rds")
+# 这里直接使用scRNA2
+scRNA2 <- subset(scRNA1, idents = c("0","14","5","7","15","17","20","8"))
+
+```
+
+
+# 物种间基因的同源替换
+
+```{r}
+#install.packages('homologene') #安装分析包
+library(homologene) # 加载包
+genelist<- rownames(scRNA_ovary@assays$RNA@counts) # 获得输入的基因，可以是单个也可以是数以万个，这里是以鸡的表达矩阵的行名为输入基因。
+
+homologene::taxData # 查看物种和编号，下一行用到 
+genelist_chic<-homologene(genelist, inTax = 9031, outTax = 9606) # inTax 是转换之前的物种（鸡：9031），outTax是转换之后的物种基因（human9606）
+
+# 到此，基因的同源转换就完成了
+```
+
+
+```{r}
+# ensemble = useMart("ENSEMBL_MART_ENSEMBL")
+# all_datasets = listDatasets(ensemble)  #显示当前数据库所含的基因组注释,运行后产生两个文件，一个是ensemble 另一个是all_datasets
+##打开all_datasets  可以查找到ggallus_gene_ensembl    Chicken genes (GRCg6a)    GRCg6a  这一行信息。
+
+human = useMart(biomart="ensembl", dataset = "hsapiens_gene_ensembl", verbose = TRUE, host = "dec2021.archive.ensembl.org") 
+
+# human <- useMart('ensembl',dataset = "hsapiens_gene_ensembl") ## 这个不指定版本，下面运行可能出错
+chicken <- useMart('ensembl',dataset = "ggallus_gene_ensembl",verbose = TRUE, host = "dec2021.archive.ensembl.org")
+
+chicken.gene <- rownames(scRNA2)
+chicken.gene <- as.data.frame(chicken.gene)
+
+
+
+m2h.g <- getLDS(attributes = c("hgnc_symbol"),filters = "hgnc_symbol", values = chicken.gene,mart = chicken,attributesL = c("hgnc_symbol"),martL = human,uniqueRows = T)
+
+dim(m2h.g)
+
+scRNA2 <- subset(scRNA2,features = m2h.g$HGNC.symbol)
+
+```
+
+# 新的转换方法
+```{r}
+scRNA2 <- subset(scRNA_ovary,features = genelist_chic$`9606`)
+```
+
+
+
+
+
+# CellChat 需要两个文件的输入
+## 一个是细胞的基因表
+## 另一条是细胞标签
+
+
+# 获取表达矩阵
+```{r}
+# 获取表达矩阵
+cellchat <- createCellChat(scRNA_ovary@assays$RNA@data)
+
+scRNA2.1 <- scRNA2
+#scRNA2.1 <- RenameIdents(scRNA2.1,"0" = "O")  # 应为后面不允许细胞群以0命名，所以把零改成大写的哦O
+# 获取标签
+scRNA2.1$cellType <- Idents(scRNA2.1)
+
+meta <- data.frame(cellType = scRNA2.1$cell_type,row.names = Cells(scRNA2.1))
+head(meta)
+# 把metadata信息加到CellChat 对象中，添加细胞标签
+cellchat <- addMeta(cellchat, meta = meta, meta.name = "cellType")
+
+# 把细胞标签设置成默认的ID 
+cellchat <- setIdent(cellchat, ident.use = "cellType")
+
+# 统计每个细胞亚群中的细胞数目
+groupSize <- as.numeric(table(cellchat@idents))
+
+# CellChat 提供了人和小鼠的配受体数据库，分别可以用CellChatDB.human, CellchatDB,mouse 
+CellChatDB <- CellChatDB.human
+str(CellChatDB)
+
+# 选择特定的信息描述细胞间的相互作用，比用一个打的配体库更加精细
+# 用 Secreted Signaling 来分析细胞通信， ECM-Receptor
+# 查看有哪些可以选择的子数据库
+unique(CellChatDB$interaction$annotation)
+CellChatDB.use <- subsetDB(CellChatDB, search = "Secreted Signaling")
+
+# 将使用的数据库信息写入到cellchat 对象中
+cellchat@DB <- CellChatDB.use
+
+# 抽取信号通路相关基因的表达矩阵
+cellchat <- subsetData(cellchat)
+
+# 对表达数据进行预处理，用于细胞间的通信分析
+# 首先在一个细胞组中识别国标到的受体或受体，然后将基因表达数据投射到蛋白-蛋白相互作用(PPI)网络上。
+# 如果配体或受体过表达，则识别过表达配体和受体之间的相互作用。
+cellchat@data.signaling
+cellchat <- identifyOverExpressedGenes(cellchat)
+cellchat <- identifyOverExpressedInteractions(cellchat)
+cellchat <- projectData(cellchat, PPI.human)
+
+# 相互作用推断
+# 为每个相互作用分配以概率值并进行置换检验来推断生物与意义上的细胞-细胞通信
+cellchat <- computeCommunProb(cellchat)
+
+# 通过计算每个信号通路相关的所有配体-受体相互作用的通信概率来推断信号通路水平高低
+# 通过计算链路的数量或汇总通信概率来计算细胞间的聚合通信网络
+cellchat <- computeCommunProbPathway(cellchat)
+cellchat <- aggregateNet(cellchat)
+
+cellchat <- identifyCommunicationPatterns(cellchat, pattern =c("outgoing","incoming"), k = 4)
+
+# 显示重要通信的信号通路
+cellchat@netP$pathways
+levels(cellchat@idents)
+# 在层次绘图的时候，第一列显示的细胞类型的数目
+vertex.receiver = seq(1,7)
+View(vertex.receiver)
+# 显示的信号通路
+pathway.show <- c("WNT")
+# secrete singnaling = c("MK"       "AMH"      "SEMA3"    "PDGF"     "BMP"      "ncWNT" "IGF"      "WNT"      "CHEMERIN" "VEGF"     "GAS"      "ANGPT" "PROS"     "APELIN")
+# pythway :("COLLAGEN" "LAMININ"  "THBS"     "FN1"      "HSPG"     "NPNT" "AGRN" )
+
+?netVisual_aggregate()
+
+netVisual_aggregate(cellchat, signaling = c("AMH"), layout = "circle", vertex.size = groupSize,pt.title=20,vertex.label.cex = 1.7)
+# 绘制环形图
+netVisual_aggregate(cellchat, signaling = "AMH", layout = "circle",vertex.receiver = vertex.receiver, vertex.weight = groupSize,arrow.width = 4)
+
+# 绘制弦图
+netVisual_aggregate(cellchat, signaling = "AMH", layout = "chord",vertex.receiver = vertex.receiver, vertex.weight = groupSize)
+
+# 识别细胞群的信号转导作用，通过计算每个细胞群的网络中心指标
+# cellchat 允许随时识别细胞间通信网络中心的发送者、接收者、调节者和影响者。
+cellchat <- netAnalysis_computeCentrality(cellchat, slot.name = "netP")
+
+netAnalysis_signalingRole_network(cellchat, signaling = "AMH",width = 8,height = 5)
+
+netVisual_heatmap(cellchat,signaling = "AMH",color.heatmap = "Reds")
+
+
+# 显示所有的显著（L-R对）
+# 从"sources.use" 定义的细胞亚群到"targets.use" 定义的细胞亚群
+netVisual_bubble(cellchat, sources.use = 1:4, targets.use = c(1:8),remove.isolate = FALSE)
+
+E1 <- netAnalysis_signalingRole_heatmap(cellchat,pattern = "outgoing")
+E2 <- netAnalysis_signalingRole_heatmap(cellchat,pattern = "incoming")
+E1+E2
+
+netVisual_aggregate(cellchat, signaling = "AMH", layout = "chord")
+
+
+pdf("chord_fig_MK.pdf")
+netVisual_chord_cell(cellchat, signaling = "MK",title.name = "MK Chord diagram")
+dev.off()
+
+
+netVisual_individual(cellchat, signaling = "AMH", pairLR.use = "AMH_AMHR2_ACVR1", layout = "chord")
+
+
+cellchat <- identifyCommunicationPatterns(cellchat, pattern = "incoming", k = 4)
+netAnalysis_river(cellchat,pattern = "incoming")
+
+
+cellchat <- identifyCommunicationPatterns(cellchat, pattern =c("outgoing","incoming"), k = 4)
+
+pdf("river_outgoing.pdf")
+netAnalysis_river(cellchat,pattern = "outgoing")
+dev.off()
+
+pdf("river_incoming.pdf")
+netAnalysis_river(cellchat,pattern = "incoming")
+dev.off()
+
+?netAnalysis_river()
+
+plotGeneExpression(cellchat,signaling = "MK")
+
+
+
+```
+
+
+# 查看cellchat 信息
+```{r}
+colnames(CellChatDB$interaction)  
+str(CellChatDB)
+head(CellChatDB$cofactor)
+head(CellChatDB$geneInfo)
+identifyCommunicationPatterns(cellchat, pattern = "outgoing", k = nPatterns)
+identifyCommunicationPatterns(cellchat, pattern = "incoming", k = nPatterns)
+
+?netVisual_heatmap()
+pdf("cellchat_heatmap.pdf",width = 20,height = 10)
+h1 <- netVisual_heatmap(cellchat, measure = c("count", "weight"),color.heatmap = c("white", "#9F35FF"))
+h2 <- netVisual_heatmap(cellchat,measure = "weight",color.heatmap = c("white", "red"),font.size = 8,height = 10)
+h1+h2
+dev.off()
+
+
+netAnalysis_signalingRole_scatter(cellchat)
+netAnalysis_dot(cellchat, pattern = "incoming")
+
+E1 <- netAnalysis_signalingRole_heatmap(cellchat,pattern = "outgoing")
+E2 <- netAnalysis_signalingRole_heatmap(cellchat,pattern = "incoming")
+E1+E2
+
+pdf("outgoing_incoming_pattern.pdf",height = 10,width = 20)
+E1+E2
+dev.off()
+
+
+```
+
+# 每个细胞与其他细胞的互作
+```{r}
+mat <- cellchat@net$weight
+
+pdf("H:/sc_three_sample/part 6 cellchat/cell_cell_indiv.pdf")
+
+for (i in 1:nrow(mat)) {
+  mat2 <- matrix(0, nrow = nrow(mat), ncol = ncol(mat), dimnames = dimnames(mat))
+  mat2[i, ] <- mat[i, ]
+  netVisual_circle(mat2, vertex.weight = groupSize, weight.scale = T, edge.weight.max = max(mat), title.name = rownames(mat)[i],arrow.width = 5,margin = 1)
+
+} 
+dev.off()
+
+?netVisual_circle()
+```
+
+
+
+
+
+# 差异基因的分析
+# 加载包
+```{r}
+# BiocManager::install("SingleR")
+# install_github("immunogenomics/harmony")
+library(Seurat)
+library(tidyverse)
+library(dplyr)
+library(patchwork)
+library(harmony)
+library(cowplot)
+library(reshape2)
+library(data.table)
+library(magrittr)
+library(RColorBrewer)
+library(SingleR)
+library(ggplot2)
+library(ggrepel)
+
+```
+
+# 加载数据
+```{r}
+load("./scRNA_harmony.rdata")
+load("./ref_Human_all.RData")
+```
+# 当前路径下创建一个文件夹
+```{r}
+dir()
+dir.create("deg/")
+setwd("deg/")
+```
+
+
+
+```{r}
+DimPlot(scRNA1, group.by = "cell_type",label = T)+ NoLegend()
+table(scRNA1@meta.data$seurat_clusters)
+
+# 提取子集
+scRNA5 <- subset(scRNA1, idents = c("3","5","7","8","12","13","14","15"))
+
+type <- c("Epithelial cell 1","Epithelial cell 2","Pre-granulosa","Ovary interstitial cell","Ovary epithelial cell","Epithelial cell 3", "Theca cell","Germ cell")
+```
+
+
+
+
+
+
+
+
+# 查看数据的图
+```{r}
+DimPlot(scRNA5,group.by = "cell_type",label = T)
+DimPlot(scRNA5,group.by = "orig.ident")
+
+# 查看数据
+sc.combined <- scRNA5
+table(sc.combined@meta.data$cell_type)
+table(sc.combined@meta.data$orig.ident)
+
+
+
+library(future)
+plan("multiprocess", works = 6)
+options(Future.globals.maxsize = 2000*1024^2)
+
+# 计算两个样本中同一细胞群的差异表达基因，使用循环
+r.deg = data.frame()
+for (i in c(1:8)) {
+  Idents(scRNA5)="cell_type"
+  deg=FindMarkers(scRNA5,ident.1 = "scSec",ident.2 = "scFiv",
+                  group.by = "orig.ident",subset.ident =type[i])
+  write.csv(deg,file = paste0( type[i],'deg.csv') )
+  deg$cell_type=type[i]
+  deg$unm=i-1
+  r.deg=rbind(deg,r.deg)
+}
+
+r.deg$gene=rownames(r.deg)
+table(r.deg$unm) 
+# 这一步运行完成后可以得到不同样本中同一细胞群的差异表达基因
+```
+
+# 设定阈值，处理数据，绘图
+```{r}
+# 根据自己计算的marker基因数量确定log2FC的阈值，这里先定为1.5
+# 过滤出差异显著的基因
+r.deg <- subset(r.deg, p_val_adj < 0.01 & abs(avg_log2FC) > 0.01)
+r.deg$threshold <- as.factor(ifelse(r.deg$avg_log2FC > 0 , 'Up', 'Down'))
+dim(r.deg)
+
+r.deg$adj_p_signi <- as.factor(ifelse(r.deg$p_val_adj < 0.005 , 'Highly', 'Lowly'))
+r.deg$thr_signi <- paste0(r.deg$threshold, "_", r.deg$adj_p_signi)
+r.deg$unm %<>% as.vector(.) %>% as.numeric(.)
+
+##自定义显示想要展示的基因名
+##这里挑选log2FC为top5的基因进行展示
+
+top_up_label <- r.deg %>% 
+  subset(., threshold%in%"Up") %>% 
+  group_by(unm) %>% 
+  top_n(n = 3, wt = avg_log2FC) %>% 
+  as.data.frame()
+
+top_down_label <- r.deg %>% 
+  subset(., threshold %in% "Down") %>% 
+  group_by(unm) %>% 
+  top_n(n = -3, wt = avg_log2FC) %>% 
+  as.data.frame()
+
+top_label <- rbind(top_up_label,top_down_label)
+top_label$thr_signi %<>% 
+  factor(., levels = c("Up_Highly","Down_Highly","Up_Lowly","Down_Lowly"))
+
+# 保存到文件，便于小白套用格式
+# write.csv(top_label, "easy_input_label.csv", quote = F)
+##也可以基于output_pbmc.markers.csv文件，手动挑选出想要标注名字的基因，
+#例如标注参与某一通路的基因，然后将文件命名为easy_input_label.csv
+
+colnames(r.deg)
+### 准备绘制暗灰色背景所需数据 
+background_position <- r.deg %>%
+  dplyr::group_by(unm) %>%
+  summarise(Min = min(avg_log2FC) - 0.2, Max = max(avg_log2FC) + 0.2) %>%
+  as.data.frame()
+## `summarise()` ungrouping output (override with `.groups` argument)
+background_position$unm %<>% as.vector(.) %>% as.numeric(.)
+background_position$start <- background_position$unm - 0.5
+background_position$end <- background_position$unm + 0.5
+
+### 准备绘制中间区域cluster彩色bar所需数据
+cluster_bar_position <- background_position
+cluster_bar_position$start <- cluster_bar_position$unm - 0.5
+cluster_bar_position$end <- cluster_bar_position$unm + 0.5
+cluster_bar_position$unm %<>% 
+  factor(., levels = c(0:max(as.vector(.))))
+
+## 设置填充颜色
+cols_thr_signi <- c("Up_Highly" = "#d7301f",
+                    "Down_Highly" = "#225ea8",
+                    "Up_Lowly" = "black",
+                    "Down_Lowly" = "black")
+cols_cluster <- c("0" = "#35978f",
+                  "1" = "#8dd3c7",
+                  "2" = "#ffffb3",
+                  "3" = "#bebada",
+                  "4" = "#fb8072",
+                  "5" = "#80b1d3",
+                  "6" = "#fdb462",
+                  "7" = "#b3de69")
+
+p= ggplot() +
+  geom_rect(data = background_position, aes(xmin = start, xmax = end, ymin = Min,
+                                            ymax = Max),
+            fill = "#525252", alpha = 0.2) + ###添加灰色背景色
+  geom_jitter(data = r.deg, aes(x =unm, y = avg_log2FC, colour = thr_signi),
+              size = 1,position = position_jitter(seed = 1)) +
+  scale_color_manual(values = cols_thr_signi) +
+  scale_x_continuous(limits = c(-0.5, max(r.deg$unm) + 0.5),
+                     breaks = seq(0, max(r.deg$unm), 1),
+                     label = seq(0, max(r.deg$unm),1)) + #修改坐标轴显示刻度
+  # 添加基因名
+  geom_text_repel(data = top_label, aes(x =unm, y = avg_log2FC, label = gene),
+                  position = position_jitter(seed = 1), show.legend = F, size = 2.5,box.padding = unit(0, "lines")) +
+  
+  geom_rect(data = cluster_bar_position, aes(xmin = start, xmax = end, ymin = -2,
+                                             ymax = 2, fill = unm), color = "black", alpha = 1, show.legend = F) +
+  scale_fill_manual(values = cols_cluster) +
+  labs(x = "Cluster", y = "average log2FC") +
+  theme_bw()
+
+plot1 <- p + theme(panel.grid.minor = element_blank(), ##去除网格线
+                   panel.grid.major = element_blank(),
+                   axis.text.y = element_text(colour = 'black', size = 12),
+                   axis.text.x = element_text(colour = 'black', size = 12, vjust = 67), #调整x轴坐标,vjust的值按照最终结果稍加调整
+                   panel.border = element_blank(), ## 去掉坐标轴
+                   axis.ticks.x = element_blank(), ## 去掉的坐标刻度线
+                   axis.line.y = element_line(colour = "black")) #添加y轴坐标轴
+
+plot1
+ggsave(filename = "deg_pointplot.pdf", plot = plot1, width = 9, height = 6)
+
+
+
+```
+
+# 查看基因的表达
+```{r}
+## 查看一些基因在UMAP展示的各个亚群中的表达情况
+FeaturePlot(sc.combined,features = c("ARL21"),reduction = "umap")
+
+DefaultAssay(scRNA1) <- "RNA"
+VlnPlot(scRNA1,features = c("GTSF1"),pt.size = 0,split.by = "orig.ident") 
+
+```
+
+
+# 加载包
+```{r}
+#BiocManager::install("clusterProfiler")
+library(Seurat)
+library(tidyverse)
+library(dplyr)
+library(patchwork)
+library(harmony)
+library(cowplot)
+library(ggplot2)
+library(AUCell)
+library(clusterProfiler)
+library(doParallel)
+library(parallel)
+library(doRNG)
+#install.packages("doRNG", repos="http://R-Forge.R-project.org")
+#install.packages("msigdbr")
+library(msigdbr)
+library(biomaRt)
+#BiocManager::install("org.Gg.eg.db")
+library(org.Gg.eg.db)
+```
+
+
+
+
+
+# 绘制信号通路
+# 加载数据
+```{r}
+load("./scRNA1.rdata")
+
+```
+
+# 对数据预处理
+```{r}
+# 随机抽样1500细胞
+sc.id <- sample(colnames(scRNA1))
+sc2 <- scRNA1[,sc.id]
+
+# 细胞排序
+cells_rankings <- AUCell::AUCell_buildRankings(sc2@assays$RNA@data, plotStats = T)
+cells_rankings
+
+# 加载通路文件（从GSEA网站下载：http://www.gsea-msigdb.org/gsea/downloads.jsp） 这个数据框是人的，而我们的数据是小鼠的，匹配的时候很可能会出错
+# 物种基因名不匹配，那么就可以使用msigdb这个R包解决
+c2 <- read.gmt("c2.cp.kegg.v7.5.1.symbols.gmt")
+
+geneSets <- lapply(unique(c2$term),function(x){print(x);c2$gene[c2$term == x]})
+names(geneSets) <- unique(c2$term)
+
+library(msigdbr)
+# 查看包含的物种。其中包括鸡在内20种
+msigdbr_show_species()
+a <- msigdbr_species()  
+
+m_df <- msigdbr(species = "Gallus gallus", category = "C2", subcategory = "KEGG")
+fgsea_sets <- m_df %>% split(x = .$gene_symbol,f = .$gs_name)
+
+# 计算得到每条通路及其比例
+cells_AUC <- AUCell_calcAUC(fgsea_sets, cells_rankings,nCores = 1, aucMaxRank = nrow(cells_rankings)*0.1) # 运行这一步的时候报错：Error in .AUCell_calcAUC(geneSets = geneSets, rankings = rankings, nCores = nCores,  : 
+  ## Fewer than 20% of the genes in the gene sets are included in the rankings.Check wether the gene IDs in the 'rankings' and 'geneSets' match.
+
+# 由于数据是GSEA所有数据都是人的，而本次数据分析是小鼠的，所以需要转换,使用msigdbr 包进行处理
+
+
+# 匹配以OX （氧化磷酸化）开头的通路看有哪些
+grep("OX", rownames(cells_AUC@assays@data$AUC),value = TRUE)
+
+# 挑选其中一条信号通路赋值给geneSet
+geneSet <- "KEGG_STEROID_HORMONE_BIOSYNTHESIS"
+
+# 转化为数值
+aucs <- as.numeric(getAUC(cells_AUC)[geneSet,])
+# 把结果添加到metadata中
+sc2$AUC <- aucs
+
+# 将通路结果和UMAP结果进行合并
+df <- data.frame(sc2@meta.data, sc2@reductions$umap@cell.embeddings)
+
+colnames(df)
+class_avg <- df %>% group_by(seurat_clusters) %>% summarise(UMAP_1 = median(UMAP_1), UMAP_2 = median(UMAP_2))
+
+```
+
+
+```{r}
+b <-cells_AUC@assays@data$AUC
+```
+
+# 画图
+```{r}
+
+ggplot(df, aes(UMAP_1, UMAP_2)) + 
+  geom_point(aes(colour = AUC)) + viridis::scale_color_viridis(option = "B") + # 这里可以选择A,B，C，D等调控颜色
+  ggrepel::geom_label_repel(aes(label = seurat_clusters),
+    data = class_avg,
+    size = 2,
+    segment.color =NA)+
+  theme(legend.position = "none") + theme_bw()+ggtitle("KEGG_STEROID_HORMONE_BIOSYNTHESIS")
+  # +facet_grid(.~orig.ident)
+# 也可以加不同的绘图元素
+
+```
+
+# 上面是通路活性
+
+#########################################################
+
+# 接下来是富集分析
+
+# GO富集分析绘图
+```{r}
+table(scRNA1$orig.ident)
+Idents(scRNA1) <- "seurat_clusters"
+scRNA3 <- subset(scRNA1, idents =c("3","5","7","12","13","15"))
+
+degdf <- FindMarkers(scRNA3,ident.1 = "scSec",ident.2 = "scFiv", 
+                     logfc.threshold = 0.3,group.by = "orig.ident",ident = 1)
+##BiocManager::install("org.Mm.eg.db")
+library(org.Gg.eg.db)
+library(clusterProfiler)
+degs.list=rownames(degdf)
+erich.go.BP = enrichGO(gene =degs.list,
+                       OrgDb = org.Gg.eg.db,
+                       keyType = "SYMBOL",
+                       ont = "BP",
+                       pvalueCutoff = 0.05,
+                       qvalueCutoff = 0.05)
+dotplot(erich.go.BP,showCategory = 15)
+?dotplot
+barplot(erich.go.BP,showCategory = 8)
+erich.go.BP_matrix=erich.go.BP@result
+write.table(erich.go.BP_matrix,"erich.go.BP.deg.con.hf.txt",sep = "\t",col.names = NA)
+
+
+erich.go.CC = enrichGO(gene =degs.list,
+                       OrgDb = org.Gg.eg.db,
+                       keyType = "SYMBOL",
+                       ont = "CC",
+                       pvalueCutoff = 0.5,
+                       qvalueCutoff = 0.5)
+dotplot(erich.go.CC,showCategory = 8)
+?dotplot
+barplot(erich.go.CC,showCategory = 8)
+erich.go.CC_matrix=erich.go.CC@result
+
+
+erich.go.MF = enrichGO(gene =degs.list,
+                       OrgDb = org.Gg.eg.db,
+                       keyType = "SYMBOL",
+                       ont = "MF",
+                       pvalueCutoff = 0.5,
+                       qvalueCutoff = 0.5)
+dotplot(erich.go.MF,showCategory = 8)
+?dotplot
+barplot(erich.go.MF,showCategory = 8)
+erich.go.MF_matrix=erich.go.MF@result
+
+
+
+erich.go.ALL = enrichGO(gene =degs.list,
+                       OrgDb = org.Gg.eg.db,
+                       keyType = "SYMBOL",
+                       ont = "ALL",
+                       pvalueCutoff = 0.5,
+                       qvalueCutoff = 0.5)
+pdf("germ_pregranu_GO.pdf",width = 8,height = 13)
+dotplot(erich.go.ALL,showCategory =12)
+dev.off()
+
+```
+
+# KEGG富集分析
+```{r}
+library(org.Gg.eg.db)
+keytypes(org.Gg.eg.db)
+
+DEG.entrez_id = mapIds(x = org.Gg.eg.db,
+                       keys =  degs.list,
+                       keytype = "SYMBOL",
+                       column = "ENTREZID")
+
+
+## install.packages("R.utils")
+library(R.utils)
+library(clusterProfiler)
+
+getOption("clusterProfiler.download.method")
+R.utils::setOption("clusterProfiler.download.method","auto")
+
+
+
+?enrichKEGG()
+erich.kegg.res <- enrichKEGG(gene = DEG.entrez_id,
+                             organism = "gga",
+                             keyType = "kegg",pvalueCutoff = 0.05,qvalueCutoff = 0.05)
+
+dotplot(erich.kegg.res)
+zzh=erich.kegg.res@result
+write.table(zzh,"erich.kegg.res.txt",sep = "\t",col.names = NA)
+
+
+
+ 
+kegg=read.table("KEGG.4.27.txt",header = T,sep = "\t")
+View(kegg)
+
+k = data.frame(kegg)
+library(ggplot2)
+library(dplyr)
+before <- as.numeric(sub("/\\d+$", "", k$GeneRatio))
+after <- as.numeric(sub("^\\d+/", "", k$GeneRatio))
+k$GeneRatio = before /after
+font.size =10
+
+k %>% 
+  ## 对进行p值排序
+  arrange(p.adjust) %>% 
+  ##指定富集的通路数目
+  slice(1:10) %>% 
+  ## 开始ggplot2 作图，其中fct_reorder调整因子level的顺序
+  ggplot(aes(GeneRatio,forcats::fct_reorder(Description,Count)))+ 
+  ## 画出点图
+  geom_point(aes(color=p.adjust, size = Count)) +
+  ## 调整颜色，guide_colorbar调整色图的方向
+  scale_color_continuous(low="red", high="blue", guide=guide_colorbar(reverse=TRUE))+
+  ## 调整泡泡的大小
+  scale_size_continuous(range=c(3, 8))+
+  ## 如果用ylab("")或出现左侧空白
+  labs(y=NULL) +
+  ## 如果没有这一句，上方会到顶
+  ggtitle("")+
+  ## 设定主题
+  theme_bw() +
+  theme(axis.text.x = element_text(colour = "black",
+                                   size = font.size, vjust =1 ),
+        axis.text.y = element_text(colour = "black",
+                                   size = font.size, hjust =1 ),
+        axis.title = element_text(margin=margin(10, 5, 0, 0),
+                                  color = "black",size = font.size),
+        axis.title.y = element_text(angle=90))
+
+
+
+```
+
+####################################################################################
+
+# 高级圈图
+```{r}
+## BiocManager::install("org.Hs.eg.db")
+## BiocManager::install("clusterProfiler")
+# install.packages("GOplot")
+library(GOplot)
+table(scRNA1$orig.ident)
+deg =FindMarkers(scRNA1,ident.1 = "scSec",ident.2 = "scFiv",group.by = "orig.ident",
+                 subset.ident = "0")
+degs.list=rownames(deg)
+#BiocManager::install('org.Hs.eg.db')
+library(org.Gg.eg.db)
+library(clusterProfiler)
+erich.go.BP = enrichGO(gene =degs.list,
+                       OrgDb = org.Gg.eg.db,
+                       keyType = "SYMBOL",
+                       ont = "BP",
+                       pvalueCutoff = 0.5,
+                       qvalueCutoff = 0.5)
+
+dotplot(erich.go.BP,showCategory = 30)
+
+erich.go.BP=erich.go.BP@result
+
+
+colnames(erich.go.BP)
+###install.packages("GOplot")
+library(GOplot)
+colnames(erich.kegg.res)
+setwd("E:/super.lesson/lesson10/")
+go1= read.table("goplot.txt",sep = "\t",header = T)
+colnames(go1)
+go1=erich.go.BP[1:3,c(1,2,8,6)]
+rownames(go1)=go1$ID
+go=go1
+###install.packages("stringr")
+library(stringr)
+go$geneID=str_replace_all(go$geneID,"/",",")
+names(go)=c('ID','Term','Genes','adj_pval')
+go$Category="BP"
+go$Category<-'BP'
+ 
+
+genedata=na.omit(genedata)
+
+x1=strsplit(go$Genes[1],split=",",fixed=T)
+x2=strsplit(go$Genes[2],split=",",fixed=T)
+x3=strsplit(go$Genes[3],split=",",fixed=T)
+g1=c(x1[[1]],x2[[1]],x3[[1]])
+
+
+genedata1=deg[g1,]   
+genedata1$ID=rownames(genedata1)
+genedata2=data.frame(ID=genedata1$ID,logFC=genedata1$avg_log2FC)
+genedata=data.frame(ID=degs.list,logFC=deg[degs.list,]$avg_log2FC)
+x=c(go$Genes[1],go$Genes[2],go$Genes[3])
+x1=go$Genes[1]
+x1=strsplit(go$Genes[3],split=",",fixed=T)
+circ <- circle_dat(go,genedata2)
+##条形图
+GOBar(subset(circ, category == 'BP'))
+#气泡图
+GOBubble(circ, labels = 3)
+
+GOCircle(circ, nsub = 3)
+
+
+chord<-chord_dat(circ, genedata2)
+
+GOChord(chord, gene.order = 'logFC')
+
+##基因与GO Term的热图(GOHeat)
+GOHeat(chord, nlfc = 1, fill.col = c('red', 'yellow', 'green'))
+```
+
+
+
+
+#代谢分析
+
+```{r}
+# 包的加载
+
+library(GSVA)
+library(VISION)
+library(scMetabolism)
+library(ggplot2)
+library(rsvd)
+library(phangorn)
+library(quadprog)
+```
+
+# 加载数据
+```{r}
+# 完成归一化处理的数据
+load("./pbmc_demo.rda")
+
+```
+# 代谢活性通路的计算
+```{r}
+countexp.Seurat <- sc.metabolism.Seurat(obj = scRNA5, method = "AUCell",imputation = F, ncores = 4, metabolism.type = "KEGG")
+#注释
+# method 这里是分析方法，可以有三种选择 VISON, AUCell, GSVA
+# ncores 线程
+```
+
+# 可视化
+```{r}
+# Dimplot 图
+DimPlot.metabolism(obj = countexp.Seurat, pathway = "Metabolism of xenobiotics by cytochrome P450",dimention.reduction.type = "umap", dimention.reduction.run = F, size = 1 )
+# 注释："Glycolysis / Gluconeogenesis" 这是所选定通路
+
+# Dot plot 图
+input.pathway <- c("Glycolysis / Gluconeogenesis","Oxidative phosphorylation","citrate cycle")
+
+DotPlot.metabolism(obj = countexp.Seurat, pathway = input.pathway, phenotype = "orig.ident",norm ="y")
+
+# box plot 箱型图
+BoxPlot.metabolism(countexp.Seurat, pathway = "Drug metabolism - cytochrome P450", phenotype = "cell_type",ncol =10  )+ NoLegend()
+# 注释：这里"Oxidative
+# phosphorylation"也可以换成input.pathway
+# Metabolism of xenobiotics by cytochrome P450,Steroid hormone biosynthesis,Steroid biosynthesis
+```
+
+
+
+# 叠加小提琴图
+```{r}
+library(ggplot2)
+library(ggsci)
+library(RColorBrewer)
+pdf("vlnplot.pdf", width = 10,height = 8)
+VlnPlot(scRNA1, features = c('DDX4','DAZL','CYP19A1','AMH','CYP17A1','CYP11A1','CD3D','SULT1C3','CDH5','DCN','SOX10','HBBA','MPEG1','ITGB8'),pt.size = 0,stack = T) + scale_fill_manual(values = c(brewer.pal(11,"Set3"),brewer.pal(3,"Dark2")))&
+  theme(axis.title.x = element_blank(),
+    axis.title.y = element_blank(),
+    axis.ticks = element_blank(),
+    axis.text.x = element_text(size = 10),
+    axis.text.y = element_text(size = 10),
+    strip.text.x = element_text(angle = 45,size = 10,hjust = 0,vjust = 0),legend.position = "none")
+
+dev.off()
+```
+
+
+# feature plot
+```{r}
+FeaturePlot(scRNA1, features = c("CYP19A1","AMH"), pt.size = 0.5,blend = TRUE,min.cutoff = 3,max.cutoff = 15)
+
+
+
+```
+
+
+# 样本切割绘图
+```{r}
+load(file = "H:/ylty_scRNA_analysis/1.primordial_follicle_formation_analysis/scRNA1_last.Rdata")
+scRNA1@meta.data$orig.ident <- factor(scRNA1@meta.data$orig.ident, levels = c("scSec","scFiv"))
+levels(scRNA1@meta.data$orig.ident)
+DimPlot(scRNA1, split.by = "orig.ident", group.by = "cell_type")
+```
+
+
+# 提取目标基因多细胞
+
+```{r}
+expr3 <- as.data.frame(scRNA1@assays$RNA@counts["GAPDH",])
+View(expr3)
+colnames(expr3) <- "GAPDH"
+expr3.rorc3 <- filter(expr3, GAPDH > 0 )  # 过滤掉为0 的行
+expr3.rorc3$GAP <- "high"
+expr4.rorc4 = filter(expr3, GAPDH == 0 )
+expr4.rorc4$GAP = "low"
+
+expr5 <- rbind(expr3.rorc3,expr4.rorc4) # 合并GAPDH高低表达的两个数据
+expr6  <- AddMetaData(scRNA1, metadata = expr5)
+
+Idents(expr6) <- "GAP"
+
+
+sc.gap <- scRNA1[,rownames(expr3.rorc3)]
+  # 提取表达GAPDH的细胞，获得新的seurat对象
+
+```
+
+
+# 使用findmarker 做差异分析
+```{r}
+
+scRNA1@meta.data$orig.ident <- as.character(scRNA1@meta.data$orig.ident)
+Idents(scRNA1) <- "type"
+scRNA1@meta.data$type <- scRNA1@meta.data$orig.ident
+
+degg <- FindMarkers(expr6, slot = "data",test.use = "wilcox",ident.1 = "high", ident.2 = "low",seurat.ident = 0, logfc.threshold = 0.5)  # 原始数据一定要注意使用DESeq2,如果是标准化之后的那么就不能用这个，而要用其他的算法，使用wilcox等
+## 上面就是提取某个基因高表达和低表达的细胞分群然后进行差异分析
+```
+# 组间单基因的表达差异
+```{r}
+Idents(scRNA1) <- "seurat_clusters"
+scRNA2 <- subset(scRNA1, idents = c("0","15"))
+scRNA2@meta.data$orig.ident <- factor(scRNA2@meta.data$orig.ident, levels = c("scSec","scFiv"))
+
+library(ggpubr)
+VlnPlot(scRNA1, features = c("CYP17A1"),slot = "data", group.by = "cell_type", split.by = "orig.ident",pt.size = 0,cols = c("red","blue"))# +stat_compare_means(method = 't.test') +stat_boxplot() + ylim(0, 25)
+```
+
+# 提取合并后的单个样本进行分析
+
+
+```{r}
+Idents(scRNA1) <- "orig.ident"
+scRNAs <- subset(scRNA1, idents = "scSec")
+Idents(scRNAs) <- "seurat_clusters"
+scRNAs1 <- subset(scRNAs,idents = c("0","10","14","15","3","5","7","12","13"))
+Idents(scRNAs) <- "cell_type"
+DimPlot(scRNAs1,group.by = "cell_type")
+
+
+# 加载包
+library(GSVA)
+library(VISION)
+library(scMetabolism)
+library(ggplot2)
+library(rsvd)
+library(phangorn)
+library(quadprog)
+library(AUCell)
+```
+
+# 代谢活性计算
+```{r}
+# 代谢活性通路的计算
+
+countexp.Seurat1 <- sc.metabolism.Seurat(obj = scRNAs1, method = "AUCell",imputation = F, ncores = 12, metabolism.type = "KEGG")
+#注释
+# method 这里是分析方法，可以有三种选择 VISON, AUCell, GSVA
+# ncores 线程
+
+```
+
+# 结果可视化
+# 可视化
+```{r}
+# Dimplot 图
+DimPlot(scRNAs1)
+
+DimPlot.metabolism(obj = countexp.Seurat, pathway = c("Oxidative phosphorylation"),dimention.reduction.type = "umap", dimention.reduction.run = F, size = 1 )
+# 注释："Glycolysis / Gluconeogenesis" 这是所选定通路
+
+# Dot plot 图
+input.pathway <- c("Oxidative phosphorylation","Cysteine and methionine metabolism","Glycerophospholipid metabolism","Folate biosynthesis","Galactose metabolism")
+
+DotPlot.metabolism(obj = countexp.Seurat, pathway = input.pathway, phenotype = "cell_type",norm ="y")
+
+# box plot 箱型图
+BoxPlot.metabolism(countexp.Seurat, pathway = "Pyruvate metabolism", phenotype = "cell_type",ncol =10  )
+# 注释：这里"Oxidative phosphorylation"也可以换成input.pathway
+
+
+input.pathway <- rownames(countexp.Seurat@assays[["METABOLISM"]][["score"]])
+
+path <- data.frame(input.pathway)
+
+pdf("metabolism.pdf", height = 16,width = 12)
+DotPlot.metabolism(obj = countexp.Seurat, pathway = input.pathway, phenotype = "cell_type", norm = "y")
+dev.off()
+
+
+```
+
+
+
+
+# 5.5 日龄代谢分析
+```{r}
+Idents(scRNA1) <- "orig.ident"
+scRNAf <- subset(scRNA1, idents = "scFiv")
+Idents(scRNAf) <- "seurat_clusters"
+scRNAf1 <- subset(scRNAf,ident = c("0","10","14","15","3","5","7","12","13"))
+
+Idents(scRNA5) <- "orig.ident"
+VlnPlot(scRNA5, features = c("HMG-COA"),pt.size = 0)+geom_boxplot(width=0.1)+NoLegend()
+
+library(cowplot)
+library(ggpubr)
+Idents(scRNA5) <- "cell_type"
+VlnPlot(scRNA5, features = c("LTBP1"),slot = "data", group.by = "cell_type", split.by = "orig.ident",pt.size = 0) + stat_compare_means(method = 't.test') + stat_boxplot(width=1) + ylim(0, 25)  #绘图
+
+
+
+
+
+```
+# 代谢活性计算
+```{r}
+# 代谢活性通路的计算
+
+fcountexp.Seurat <- sc.metabolism.Seurat(obj = scRNAf1, method = "AUCell",imputation = F, ncores = 12, metabolism.type = "KEGG")
+#注释
+# method 这里是分析方法，可以有三种选择 VISON, AUCell, GSVA
+# ncores 线程
+
+```
+# 结果可视化
+# 可视化
+```{r}
+# Dimplot 图
+DimPlot(scRNAf1)
+
+DimPlot.metabolism(obj = countexp.Seurat, pathway = "Biotin metabolism",dimention.reduction.type = "umap", dimention.reduction.run = F, size = 1 )
+# 注释："Glycolysis / Gluconeogenesis" 这是所选定通路
+
+# Dot plot 图
+input.pathway <- c("Oxidative phosphorylation","Cysteine and methionine metabolism","Glycerophospholipid metabolism","Folate biosynthesis","Galactose metabolism","Starch and sucrose metabolism")
+
+DotPlot.metabolism(obj = countexp.Seurat, pathway = input.pathway, phenotype = "cell_type",norm ="y")
+
+# box plot 箱型图
+BoxPlot.metabolism(countexp.Seurat, pathway = "Oxidative phosphorylation", phenotype = "cell_type",ncol =10  )
+# 注释：这里"Oxidative phosphorylation"也可以换成input.pathway
+
+
+input.pathway <- rownames(fcountexp.Seurat@assays[["METABOLISM"]][["score"]])
+
+pdf("Fiv_metabolism.pdf", height = 16,width = 12)
+DotPlot.metabolism(obj = fcountexp.Seurat, pathway = input.pathway, phenotype = "cell_type", norm = "y")
+dev.off()
+
+
+```
+
+# test
+
+```{r}
+Idents(scRNA1) <- "cell_type"
+VlnPlot(scRNA1, features = c("SGO2"),pt.size = 0)+NoLegend()
+```
+
+
+```{r}
+dif<-FindAllMarkers(scRNA5,logfc.threshold = 0.6,min.pct = 0.4,only.pos = T)
+write.table(dif,"dif.txt",sep = "\t",quote = F,row.names = T,col.names = T)
+#dif1 <- read.table("dif.txt",header = T,row.names = 1,sep = "\t")
+sig.dif<-dif%>%group_by(cluster)%>%top_n(n = 5,wt = avg_log2FC)
+write.table(sig.dif,"dif.sig.txt",sep = "\t",quote = F,row.names = T,col.names = T)
+genes <- unique(sig.dif$gene)
+length(genes);genes
+```
+
+# 加载注释好的文件
+```{r}
+load("H:/ylty_scRNA_analysis/1.primordial_follicle_formation_analysis/scRNA1_last.Rdata")
+
+DefaultAssay(scRNA1) <- "RNA"
+Idents(scRNA1) <- "cell_type"
+VlnPlot(scRNA1, features = c('DDX4','DAZL',"CYP19A1","CYP17A1","LTBP1"),pt.size = 0 )
+VlnPlot(scRNA1, features = c("SYCP1","STK31","SYCP3","SYCP2"),pt.size = 0 ,split.by = "orig.ident") +NoLegend()
+
+
+VlnPlot(scRNA1, features = c("ESR2"),split.by = "cell_type") + NoLegend()
+```
+
+# 提取上皮细胞亚群重新分群
+```{r}
+EP <- subset(scRNA1, idents = "Ovary epithelial cell")
+
+## 重新标准化进行聚类分析
+EP <- NormalizeData(EP, normalization.method = "LogNormalize", scale.factor = 1e4) 
+EP <- FindVariableFeatures(EP, selection.method = 'vst', nfeatures = 2000)
+EP <- ScaleData(EP, vars.to.regress = "percent.mt")
+EP <- RunPCA(EP, features = VariableFeatures(object = EP)) 
+
+EP <- FindNeighbors(EP, dims = 1:10)
+EP <- FindClusters(EP, resolution = 0.4 )
+# Look at cluster IDs of the first 5 cells
+head(Idents(EP), 5)
+table(EP$seurat_clusters) 
+EP <- RunUMAP(EP, dims = 1:10)
+DimPlot(EP, reduction = 'umap')
+# 大致看一下每个群体在每个样本中的分布
+DimPlot(EP, reduction = 'umap',split.by = "orig.ident")
+
+cluster_type <- c("0" = "EPC-1","1" = "EPC-2","2" = "EPC-3", "3" = "EPC-4")
+
+## 注释并保存数据
+EP[['cell_subtype']] = unname(cluster_type[EP@meta.data$seurat_clusters])
+set.seed(111)
+pdf("H:/ylty_scRNA_analysis/1.primordial_follicle_formation_analysis/personality_analysis_result/EP_sec_fiv_subgroup_analysis_res/Dimplot.pdf")
+p_1 <- DimPlot(EP1, 
+        reduction = "umap", 
+        group.by = "cell_subtype",
+        label = TRUE, label.size = 3, pt.size = 1) + NoLegend()
+dev.off()
+getwd()
+save(EP,file = "H:/ylty_scRNA_analysis/1.primordial_follicle_formation_analysis/personality_analysis_result/EP_sec_fiv_subgroup_analysis_res/EP.Rdata")
+
+
+# 寻找标记因
+dif<-FindAllMarkers(EP1,logfc.threshold = 0.6,min.pct = 0.4,only.pos = T)
+sig.dif<-dif%>%group_by(cluster)%>%top_n(n = 10,wt = avg_log2FC)
+genes <- unique(sig.dif$gene)
+length(genes);genes
+DotPlot(EP1,features =genes[1:100],dot.scale = 3.5,cols = c("green","red")) +theme(axis.text.x = element_text(angle = 45,hjust = 1,size = 5))
+
+# 标记基因呈现
+genes_to_check = c('DCN','COL6A1',"OTOS","MTCL1","SPIK2","FABP7")
+pdf("H:/ylty_scRNA_analysis/1.primordial_follicle_formation_analysis/personality_analysis_result/EP_sec_fiv_subgroup_analysis_res/Markergene_Dotlot.pdf",height = 4,width = 5)
+p_2 <- DotPlot(EP1, group.by = 'cell_subtype',
+           features = unique(genes_to_check)) + RotatedAxis() + xlab(NULL)+ylab(NULL) 
+dev.off()
+
+pdf("H:/ylty_scRNA_analysis/1.primordial_follicle_formation_analysis/personality_analysis_result/EP_sec_fiv_subgroup_analysis_res/combind.pdf",height = 4, width = 8)
+p_1+p_2
+dev.off()
+
+# VlnPlot(EP,features = c('PPL', 'LHX9'),group.by = 'seurat_clusters')
+
+FeaturePlot(EP,features = c("COL6A1","SPIK2"),reduction = "umap",min.cutoff =2, cols = c("#3f5efb","#fc466b"))
+
+```
+
+# umap图的美化
+```{r}
+library(ggrepel)
+
+umap = EP1@reductions$umap@cell.embeddings %>%  #坐标信息
+  as.data.frame() %>% 
+  cbind(cell_subtype = EP1@meta.data$cell_subtype) # 注释后的label信息 ，改为cell_type
+head(umap)
+
+
+# ggplot 绘图
+allcolour=c("#DC143C","#0000FF","#20B2AA","#FFA500","#9370DB","#98FB98","#F08080","#1E90FF","#7CFC00","#FFFF00",            "#808000","#FF00FF","#FA8072","#7B68EE","#9400D3","#800080","#A0522D","#D2B48C","#D2691E","#87CEEB","#40E0D0","#5F9EA0",            "#FF1493","#0000CD","#008B8B","#FFE4B5","#8A2BE2","#228B22","#E9967A","#4682B4","#32CD32","#F0E68C","#FFFFE0","#EE82EE",            "#FF6347","#6A5ACD","#9932CC","#8B008B","#8B4513","#DEB887")
+p <- ggplot(umap,aes(x= UMAP_1 , y = UMAP_2 ,color = cell_subtype)) +  geom_point(size = 1 , alpha =1 )  +  scale_color_manual(values = allcolour)
+# 得到基础的p图
+p
+
+# 去掉坐标轴
+p2 <- p  +
+  theme(panel.grid.major = element_blank(), #主网格线
+        panel.grid.minor = element_blank(), #次网格线
+        panel.border = element_blank(), #边框
+        axis.title = element_blank(),  #轴标题
+        axis.text = element_blank(), # 文本
+        axis.ticks = element_blank(),
+        panel.background = element_rect(fill = 'white'), #背景色
+        plot.background=element_rect(fill="white"))
+p2
+
+# 去掉图例
+p3 <- p2 +         
+        theme(
+          legend.title = element_blank(), #去掉legend.title 
+          legend.key=element_rect(fill='white'), #
+        legend.text = element_text(size=20), #设置legend标签的大小
+        legend.key.size=unit(1,'cm') ) +  # 设置legend标签之间的大小
+  guides(color = guide_legend(override.aes = list(size=5))) #设置legend中 点的大小 
+p3
+
+
+p4 <- p3 + 
+  geom_segment(aes(x = min(umap$UMAP_1) , y = min(umap$UMAP_2) ,
+                   xend = min(umap$UMAP_1) +3, yend = min(umap$UMAP_2) ),
+               colour = "black", size=1,arrow = arrow(length = unit(0.3,"cm")))+ 
+  geom_segment(aes(x = min(umap$UMAP_1)  , y = min(umap$UMAP_2)  ,
+                   xend = min(umap$UMAP_1) , yend = min(umap$UMAP_2) + 3),
+               colour = "black", size=1,arrow = arrow(length = unit(0.3,"cm"))) +
+  annotate("text", x = min(umap$UMAP_1) +1.5, y = min(umap$UMAP_2) -1, label = "UMAP_1",
+           color="black",size = 3, fontface="bold" ) + 
+  annotate("text", x = min(umap$UMAP_1) -1, y = min(umap$UMAP_2) + 1.5, label = "UMAP_2",
+           color="black",size = 3, fontface="bold" ,angle=90) 
+p4
+```
+
+```{r}
+cell_type_med <- umap %>%
+  group_by(cell_subtype) %>%
+  summarise(
+    UMAP_1 = median(UMAP_1),
+    UMAP_2 = median(UMAP_2)
+  )
+p5 <- p4 +geom_label_repel(aes(label=cell_subtype), fontface="bold",data = cell_type_med,
+                   point.padding=unit(0.5, "lines"))+ NoLegend()
+
+pdf("H:/ylty_scRNA_analysis/1.primordial_follicle_formation_analysis/personality_analysis_result/EP_sec_fiv_subgroup_analysis_res/Dimplot.pdf",height = 3.5,width = 4)
+p5
+dev.off()
+
+
+pdf("H:/ylty_scRNA_analysis/1.primordial_follicle_formation_analysis/personality_analysis_result/EP_sec_fiv_subgroup_analysis_res/combind.pdf",height = 4, width = 7)
+p5+p_2
+dev.off()
+```
+# 提取卵巢细胞保存seurat对象
+```{r}
+Idents(scRNA1) <- "seurat_clusters"
+scRNA_ovary <- subset(scRNA1,idents =c("1","7","8","10","12","14","15"))
+  
+write_rds(scRNA_ovary,"scRNA_ovary.rds")
+```
+
+
+
+```{r}
+library(ggplot2)
+library(ggpubr)
+DefaultAssay(scRNA_ovary) <- "RNA"
+DefaultAssay(scRNA_ovary) <- "integrated"
+DefaultAssay(scRNA_ovary) <- "SCT"
+Idents(scRNA_ovary) <- "cell_type"
+getwd()
+dir()
+scRNA_ovary <- read_rds("scRNA_ovary.rds")
+
+VlnPlot(scRNA_ovary, features = c("KRT19"),slot = "data", group.by = "cell_type", split.by = "orig.ident",pt.size = 0) + stat_compare_means(method = 't.test') + stat_boxplot(width=0.3,position = position_dodge(width=1))  + ylim(0,15)  #绘图
+
+Idents(scRNA1) <- "cell_type"
+FeaturePlot(sc.combined, features = "ORP8", min.cutoff = 0, max.cutoff =5,label = T)
+VlnPlot(scRNA_ovary, features = c("TGM4"),slot = "data", group.by = "cell_type", split.by = "orig.ident",pt.size = 0)
+
+FeaturePlot(scRNA_ovary, features = c("TFAP2B","SYCP3","TCFL5","E2F2"),reduction = "umap")  # 
+```
+
+# load data
+```{r}
+scRNA_ovary <- read_rds("H:/ylty_scRNA_analysis/1.primordial_follicle_formation_analysis/scRNA_ovary.rds")
+```
+
+# cytoSPACE 分析2日龄
+```{r}
+# 加载函数
+source('H:/cytospace-main/cytospace-main/cytospace/Prepare_input_files/generate_cytospace_from_seurat_object.R')
+
+#上述一步的R文件里包括了两个函数，一个是单细胞的一个是空间转录的处理函数
+
+# 接下来先处理单细胞的
+Idents(scRNA1) <- "orig.ident"
+scRNA_Sec <- subset(scRNA1, ident = "scSec")
+Idents(scRNA_Sec) <- "cell_type"
+
+generate_cytospace_from_scRNA_seurat_object(scRNA_Sec,dir_out='H:/cytospace-main/SCT_Sec',fout_prefix='')
+
+# 加载空转数据
+
+load("H:/ylty_scRNA_analysis/1.primordial_follicle_formation_analysis/result/sc_Sec_st_Sec/st_Sec_last.Rdata")
+save(scRNA_Sec,file = "H:/ylty_scRNA_analysis/1.primordial_follicle_formation_analysis/scRNA_Sec.Rdata")
+# 生成准备空转cytoSPACE输入数据
+generate_cytospace_from_ST_seurat_object(st_Sec,dir_out='H:/cytospace-main/SCT_Sec/',fout_prefix='',slice='stSec')
+
+# 提取cell label
+count <- data.frame(rownames(scRNA_Ten@meta.data),scRNA_Ten@meta.data$cell_type)
+colnames(count) <- c("CellIDs","CellType")
+count <- as.matrix(count)
+write.csv(count, "H:/cytospace-main/SCT_ten/cell_type_labels.CSV",row.names = F,quote = F)
+
+```
+```{r}
+Idents(scRNA1) <- "orig.ident"
+Fiv <- subset(scRNA1, idents = "scFiv")
+table(Fiv@meta.data$cell_type) 
+```
+
